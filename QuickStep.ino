@@ -130,6 +130,46 @@ class QuickStepper {
     };
 };
 
+class MultiQuickStepper {
+  private:
+    static const int MAX_MOTORS = 10;
+    QuickStepper* motors[MAX_MOTORS];
+    int motorCount = 0;
+  
+  public:
+    MultiQuickStepper() {}
+    
+    bool addMotor(QuickStepper* motor) {
+      if (motorCount >= MAX_MOTORS) {
+        return false;  // Cannot add more motors
+      }
+      motors[motorCount++] = motor;
+      return true;
+    }
+    
+    void moveTo(long* positions) {
+      for (int i = 0; i < motorCount; i++) {
+        motors[i]->moveTo(positions[i]);
+      }
+    }
+    
+    bool run() {
+      bool anyRunning = false;
+      for (int i = 0; i < motorCount; i++) {
+        if (motors[i]->run()) {
+          anyRunning = true;
+        }
+      }
+      return anyRunning;
+    }
+    
+    void setConfig(float acceleration, float maxSpeed) {
+      for (int i = 0; i < motorCount; i++) {
+        motors[i]->setConfig(acceleration, maxSpeed);
+      }
+    }
+};
+
 QuickStepper stepperX(0, 1);
 
 void setup() {
