@@ -9,9 +9,15 @@ struct MotorInfo {
 };
 
 struct MotorParams {
-    float acceleration;
-    float maxSpeed;
+  float acceleration;
+  float maxSpeed;
 };
+
+/* struct RunID {
+  bool inConstantPhase = false;
+  bool deceleration = false;
+  long destination;
+} */
 
 class QuickStepper {
   private:
@@ -20,7 +26,7 @@ class QuickStepper {
 
     float acceleration = 10.0; // steps/s^2
     float maxSpeed = 1000.0; // steps/s
-    float minSpeed = 1;
+    float minSpeed = 10.0; // steps/s
 
     float currentSpeed = 0.0;  // steps/second
     unsigned long stepDelay;   // microseconds
@@ -51,19 +57,29 @@ class QuickStepper {
       constantDuration = duration;
     }
 
-    void moveTo(long dest) {
-      // dest is total steps to run for
-      isRunning = true;
-      currentSpeed = 0.0;
-      inConstantPhase = false;
-      deceleration = false;
-      lastStepTime = micros();
-      stepDelay = 1000000;
+    void moveTo(long dest) { // dest = total steps to run
+      stepsToAccelerate = 0;
       totalSteps = dest - currentPosition;
-      currentPosition = dest;
+      stepsSinceStart = 0;
       setDirection(totalSteps);
       middleTotalSteps = int(totalSteps / 2);
-      stepsSinceStart = 0;
+      if (!isRunning) {
+        isRunning = true;
+        currentSpeed = minSpeed;
+        /*inConstantPhase = false;
+        deceleration = false;*/
+        lastStepTime = micros();
+        stepDelay = 1;
+      }
+      /*Serial.print("Called MoveTo On ");
+      Serial.println(motorLabel);
+      Serial.println(totalSteps);
+      Serial.println(dest);
+      Serial.println(currentPosition);*/
+    }
+
+    void restartTime() {
+      lastStepTime = micros();
     }
 
     void stop() {
@@ -76,10 +92,13 @@ class QuickStepper {
 
     void setAcceleration(float newAcceleration) { acceleration = newAcceleration; }
     void setMaxSpeed(float newMaxSpeed) { maxSpeed = newMaxSpeed; }
+    void setMinSpeed(float newMinSpeed) { minSpeed = newMinSpeed; }
     void setPosition(float position) { currentPosition = position; }
     float getPercentageDone() {return static_cast<float>(stepsSinceStart) / static_cast<float>(totalSteps); }
     float getAcceleration() {return acceleration; }
     float getMaxSpeed() {return maxSpeed; }
+    int getIsRunning() {return isRunning; }
+    char getMotorLabel() {return motorLabel; }
 
     MotorInfo getInfo() {
       MotorInfo info = {
@@ -125,7 +144,9 @@ class QuickStepper {
 
       if (stepsSinceStart >= totalSteps) {
         stop();
-        Serial.println(stepsSinceStart);
+        /*Serial.print(motorLabel);
+        Serial.println(positiveDirection);
+        Serial.println(stepsSinceStart);*/
         return false;
       }
 
@@ -138,34 +159,32 @@ class QuickStepper {
         // Serial.println(((totalSteps - stepsSinceStart) - stepsToAccelerate));
         stepMotor();
         stepsSinceStart++;
+        if (positiveDirection == 1) {
+          currentPosition++;
+        } else {
+          currentPosition--;
+        }
         lastStepTime = currentMicros;
         
         // Update speed based on phase
-        if (!inConstantPhase && !deceleration) {
-  
-          // Acceleration phase
+        if (currentSpeed < maxSpeed && !(stepsSinceStart > middleTotalSteps)) {
           currentSpeed += acceleration * (stepDelay / 1000000.0);
-          if (stepsSinceStart > middleTotalSteps) {
-            deceleration = true;
-          }
           if (currentSpeed >= maxSpeed) {
             inConstantPhase = true;
             stepsToAccelerate = stepsSinceStart * 0.95;
           }
         }
-        else if (inConstantPhase) {
-          if (((totalSteps - stepsSinceStart) - stepsToAccelerate) < 0) {
-            inConstantPhase = false;
-            deceleration = true;
-          }
-        }
-        else if (deceleration) {
+        else if (
+            currentSpeed > maxSpeed 
+            || (stepsSinceStart > middleTotalSteps && stepsToAccelerate == 0)
+            || ((totalSteps - stepsSinceStart) - stepsToAccelerate) < 0) 
+        {
           currentSpeed -= acceleration * (stepDelay / 1000000.0);
           currentSpeed = max(currentSpeed, minSpeed);
         }
       
         stepDelay = 1000000.0 / currentSpeed;
-      };
+      }
       return true;
     };
 };
@@ -183,6 +202,7 @@ class MultiStepper {
     long* currentPositions[COORDINATE_DIMENSIONS];
     long* futurePositions[MAX_CHAINS][COORDINATE_DIMENSIONS];
     int futurePositionsIndex = 0;
+    bool isRunning = false;
 
     // Chaining
     float cornering = 0.2;
@@ -198,24 +218,36 @@ class MultiStepper {
           }
       }
 
-      // Calculate time needed for max steps motor
-      // Using s = (v²)/(2a) for acceleration and deceleration phases
-      // and s = vt for constant speed phase
-      float maxTime = sqrt(4 * maxSteps / maxAcceleration);
-      float actualMaxSpeed = maxSteps / maxTime;
-      
-      if (actualMaxSpeed > maxSpeed) {
-          // Need to recalculate with speed limit
+      // Calculate time needed for max steps motor at max speed
+      // t = sqrt(2s/a) for acceleration
+      // Total time = 2 * acceleration time + constant speed time
+      float accelTime = sqrt(2.0 * maxSteps / maxAcceleration);
+      float totalTime;
+      float actualMaxSpeed;
+
+      if (accelTime * maxAcceleration >= maxSpeed) {
+          // We hit speed limit, recalculate with max speed
           actualMaxSpeed = maxSpeed;
-          maxTime = (maxSteps / maxSpeed) + (maxSpeed / maxAcceleration);
+          float distanceAtMaxSpeed = maxSteps - (maxSpeed * maxSpeed / maxAcceleration);
+          float constantSpeedTime = distanceAtMaxSpeed / maxSpeed;
+          totalTime = (2 * maxSpeed / maxAcceleration) + constantSpeedTime;
+      } else {
+          // We can use triangular profile
+          actualMaxSpeed = maxSpeed;
+          totalTime = 2 * accelTime;
       }
 
-      // Calculate params for other motors
+      // Calculate params for all motors
       MotorParams* params = new MotorParams[numMotors];
       for (int i = 0; i < numMotors; i++) {
-          float ratio = abs(steps[i]) / (float)maxSteps;
-          params[i].maxSpeed = actualMaxSpeed * ratio;
-          params[i].acceleration = maxAcceleration * ratio;
+          if (steps[i] == 0) {
+              params[i].maxSpeed = 0;
+              params[i].acceleration = 0;
+          } else {
+              float ratio = abs(steps[i]) / (float)maxSteps;
+              params[i].maxSpeed = actualMaxSpeed * ratio;
+              params[i].acceleration = maxAcceleration * ratio;
+          }
       }
 
       return params;
@@ -227,7 +259,10 @@ class MultiStepper {
       setAcceleration(maxAcceleration);
     }
 
-    void setCornering(float newCornering) {cornering = newCornering; }
+    void setCornering(float newCornering) {
+      cornering = newCornering;
+      percentageBeforeTurning = 1 - cornering;
+    }
     
     bool addMotor(QuickStepper* motor) {
       if (motorCount >= MAX_MOTORS) {
@@ -260,17 +295,12 @@ class MultiStepper {
     }
 
     void chainTo(long* positions) {
-      // Can only handle cases where a motor is not used in both positions
-      // I.e a point of (10, 10, 0) -> (20, 10, 10) will not work
-      // as the x motor is used in both of them
-      // (10, 10, 0) -> (10, 10, 10) will work
-
-      float percentageBeforeTurning = 1 - cornering;
-      for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
-        futurePositions[futurePositionsIndex][j] = positions[j];
-      }
-      futurePositionsIndex++;
-
+        // Store the actual values, not pointers
+        for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
+            // Allocate new memory for each position
+            futurePositions[futurePositionsIndex][j] = new long(positions[j]);
+        }
+        futurePositionsIndex++;
     }
 
     void stop() {
@@ -280,61 +310,92 @@ class MultiStepper {
         }
       }
       futurePositionsIndex = 0;
+      isRunning = false;
+    }
+
+    void printFuturePositions() {
+      Serial.println("Future Positions Array:");
+      for (int i = 0; i < futurePositionsIndex; i++) {
+          Serial.print("Chain ");
+          Serial.print(i);
+          Serial.print(": ");
+          for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
+              Serial.print(*futurePositions[i][j]);
+              Serial.print(" ");
+          }
+          Serial.println();
+      }
+      Serial.println("End of Future Positions");
     }
 
     void startCornering() {
-      long* newPositions[COORDINATE_DIMENSIONS];
+      if (futurePositionsIndex < 1) {return; }
+      
+      // Create local array to store the values
+      long positions[COORDINATE_DIMENSIONS];
       for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
-        newPositions[j] = futurePositions[0][j];
+          positions[j] = *futurePositions[0][j];  // Dereference to get value
+          delete futurePositions[0][j];  // Free the memory
       }
 
-      for (int i = 1; i < motorCount; i++) {
-        for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
-          futurePositions[i - 1][j] = futurePositions[i][j];
-        }
+      // Shift remaining positions up
+      for (int i = 0; i < futurePositionsIndex - 1; i++) {
+          for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
+              futurePositions[i][j] = futurePositions[i + 1][j];
+          }
       }
+      futurePositionsIndex--;
       long steps[motorCount];
       for (int i = 0; i < motorCount; i++) {
-        if (newPositions[i] != currentPositions[i]) {
+        /*if (!motors[i]->getIsRunning()) {
           motors[i]->moveTo(newPositions[i]);
           steps[i] = motors[i]->getInfo().totalSteps;
         } else {
-          steps[i] = 1;
-        }
+          steps[i] = 0;
+        }*/
+        int stepsLeft = motors[i]->getInfo().totalSteps;// - motors[i]->getInfo().stepsSinceStart;
+        motors[i]->moveTo(positions[i]);
+        steps[i] = motors[i]->getInfo().totalSteps - stepsLeft;
+      }
+      //Serial.println("STEPS OVERVIEW:");
+      for (int i = 0; i < motorCount; i++) {
+        //Serial.println(steps[i]);
       }
 
       MotorParams* params = calculateMotorParams(steps, motorCount);
 
       for (int i = 0; i < motorCount; i++) {
-        if (steps[i] != 1) {
+        if (steps[i] != 0) {
           motors[i]->setMaxSpeed(params[i].maxSpeed);
           motors[i]->setAcceleration(params[i].acceleration);
         }
       }
 
       for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
-        currentPositions[j] = newPositions[j];
+        currentPositions[j] = positions[j];
       }
-
       delete[] params;
 
     }
     
     bool run() {
+      if (!isRunning) {
+        for (int i = 0; i < motorCount; i++) {
+          motors[i]->restartTime();
+        }
+        isRunning = true;
+      }
       bool anyRunning = false;
       bool anyBelowThreshold = false;
       for (int i = 0; i < motorCount; i++) {
         if (motors[i]->run()) {
           anyRunning = true;
-
           if (motors[i]->getPercentageDone() <= percentageBeforeTurning) {
             anyBelowThreshold = true;  // One motor is below threshold
           }
         }
       }
-      if (!anyBelowThreshold) { 
-        Serial.println("SHOULD CORNER NOW");
-        delay(2000);
+      if (!anyBelowThreshold && anyRunning) { 
         startCornering(); 
       }
       if (!anyRunning) { stop(); }
@@ -360,6 +421,12 @@ class MultiStepper {
         motors[i]->setPosition(position);
       }
     }
+
+    void setMinSpeed(float newMinSpeed) { 
+      for (int i = 0; i < motorCount; i++) {
+        motors[i]->setMinSpeed(newMinSpeed);
+      }
+    }
 };
 
 QuickStepper stepperX(0, 1);
@@ -369,26 +436,28 @@ QuickStepper stepperZ(4, 5);
 MultiStepper steppers;
 
 void setup() {
+  //const float STEPS_PER_CM = 110.65;
+  const float STEPS_PER_CM = 20;
   Serial.begin(9600);
   // put your setup code here, to run once:
   steppers.addMotor(&stepperX);
   steppers.addMotor(&stepperY);
   steppers.addMotor(&stepperZ);
-  steppers.setMaxSpeed(100.0);
-  steppers.setAcceleration(10.0);
+  steppers.setMaxSpeed(2 * STEPS_PER_CM); // 20
+  steppers.setAcceleration(2); // 100
+  steppers.setMinSpeed(2); // 100
+  steppers.setCornering(0.25);
 
   stepperX.setLabel('X');
   stepperY.setLabel('Y');
   stepperZ.setLabel('Z');
 
-  const float STEPS_PER_CM = 110.65;
-
   long positions[] = {0, 0, 1 * STEPS_PER_CM};
-  long positions2[] = {2 * STEPS_PER_CM, 2 * STEPS_PER_CM, 1 * STEPS_PER_CM};
-  long positions3[] = {2 * STEPS_PER_CM, 2 * STEPS_PER_CM, 0 * STEPS_PER_CM};
+  long positions2[] = {2 * STEPS_PER_CM, 2 * STEPS_PER_CM, 3 * STEPS_PER_CM};
+  long positions3[] = {2 * STEPS_PER_CM, 2 * STEPS_PER_CM, 2 * STEPS_PER_CM};
   steppers.moveTo(positions);
   steppers.chainTo(positions2);
-  steppers.chainTo(positions2);
+  steppers.chainTo(positions3);
 
   Serial.println("X");
   Serial.println(stepperX.getInfo().totalSteps);
