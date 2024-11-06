@@ -49,6 +49,8 @@ class QuickStepper {
     int positiveDirection = 1;
     int prevPositiveDirection = 1;
     bool keepConstantSpeed = false;
+    bool allowFastRecovery = true;
+    const static float allowFastRecoveryFactor = 2.5;
 
     // Delete
     char motorLabel = '-';
@@ -132,6 +134,7 @@ class QuickStepper {
     void setMinSpeed(float newMinSpeed) { minSpeed = newMinSpeed; }
     void setPosition(float position) { currentPosition = position; }
     void setKeepConstantSpeed(bool newKeepConstantSpeed) { keepConstantSpeed = newKeepConstantSpeed; }
+    void setAllowFastRecovery(bool newAllowFastRecovery) { allowFastRecovery = newAllowFastRecovery; }
     bool getKeepConstantSpeed() { return keepConstantSpeed; }
     float getPercentageDone() {return static_cast<float>(stepsSinceStart) / static_cast<float>(totalSteps); }
     float getAcceleration() {return acceleration; }
@@ -266,18 +269,25 @@ class QuickStepper {
         }
         // If we're decelerating, don't allow acceleration changes
         else if (remainingSteps <= stoppingDistance) {
-          if (brakeAcceleration == 0) {brakeAcceleration = acceleration; };
+          if (brakeAcceleration == 0) {
+            brakeAcceleration = acceleration; 
+            if (allowFastRecovery) { brakeAcceleration *= allowFastRecoveryFactor; }
+          };
             // We need to decelerate
+          if (currentSpeed > 0) {
             currentSpeed -= brakeAcceleration * (stepDelay / 1000000.0);
             currentSpeed = max(currentSpeed, minSpeed);
+          } else {
+            currentSpeed += brakeAcceleration * (stepDelay / 1000000.0);
+          }
         }
         // Normal acceleration phase
         else if (currentSpeed < maxSpeed 
         && ((!(stepsSinceStart >= middleTotalSteps)) || middleTotalSteps == 0) 
         && remainingSteps > stoppingDistance) 
         {
-            currentSpeed += acceleration * (stepDelay / 1000000.0);
-            currentSpeed = min(currentSpeed, maxSpeed);
+          currentSpeed += acceleration * (stepDelay / 1000000.0);
+          currentSpeed = min(currentSpeed, maxSpeed);
         }
         else {
           /*Serial.print("NOTHING HAPPENED FOR ");
@@ -286,7 +296,6 @@ class QuickStepper {
           Serial.println(stepsSinceStart);
           Serial.println(middleTotalSteps);*/
         }
-
         stepDelay = 1000000.0 / abs(currentSpeed);
       }
       return true;
@@ -462,9 +471,16 @@ class MultiStepper {
         motors[i]->moveTo(positions[i]);
         steps[i] = motors[i]->getInfo().totalSteps - stepsLeft;
       }
-      //Serial.println("STEPS OVERVIEW:");
+      bool anyOtherMotorsPositiveSteps[MAX_MOTORS];
       for (int i = 0; i < motorCount; i++) {
-        //Serial.println(steps[i]);
+        anyOtherMotorsPositiveSteps[i] = false;
+        for (int j = 0; j < motorCount; j++) {
+          if (i == j) continue;
+
+          if (steps[j] > 0) {
+            anyOtherMotorsPositiveSteps[i] = true;
+          }
+        }
       }
 
       MotorParams* params = calculateMotorParams(steps, motorCount);
@@ -473,7 +489,10 @@ class MultiStepper {
         if (steps[i] != 0) {
           motors[i]->setMaxSpeed(params[i].maxSpeed);
           motors[i]->setAcceleration(params[i].acceleration);
-          if (motors[i]->getCurrentSpeed() != motors[i]->getInfo().minSpeed) {
+          if (
+            motors[i]->getCurrentSpeed() != motors[i]->getInfo().minSpeed
+            && anyOtherMotorsPositiveSteps[i]
+          ) {
             motors[i]->setKeepConstantSpeed(true);
           }
         }
@@ -555,6 +574,9 @@ class MultiStepper {
       // Only allow if your motors can handle it
       // If False this could mean that your motors could overshoot ~20%
       allowFastRecovery = newAllowFastRecovery;
+      for (int i = 0; i < motorCount; i++) {
+        motors[i]->setAllowFastRecovery(newAllowFastRecovery);
+      }
     }
 };
 
