@@ -1,6 +1,10 @@
+#define LONG_MAX 2147483647L
+#define LONG_MIN -2147483648L
+
 struct MotorInfo {
   float acceleration;
   float maxSpeed;
+  float minSpeed;
   long currentPosition;
   bool isRunning;
   int positiveDirection;
@@ -27,6 +31,7 @@ class QuickStepper {
     float acceleration = 10.0; // steps/s^2
     float maxSpeed = 1000.0; // steps/s
     float minSpeed = 10.0; // steps/s
+    float brakeAcceleration = 0;
 
     float currentSpeed = 0.0;  // steps/second
     unsigned long stepDelay;   // microseconds
@@ -42,11 +47,14 @@ class QuickStepper {
     float middleTotalSteps;
     long currentPosition;
     int positiveDirection = 1;
+    int prevPositiveDirection = 1;
+    bool keepConstantSpeed = false;
 
     // Delete
     char motorLabel = '-';
   
   public:
+
     QuickStepper(int step_pin, int dir_pin): stepPin(step_pin), dirPin(dir_pin) {
       pinMode(stepPin, OUTPUT);
       pinMode(dirPin, OUTPUT);
@@ -57,12 +65,34 @@ class QuickStepper {
       constantDuration = duration;
     }
 
+    long calculateAccelerationSteps() {
+      // Break down the calculation to prevent overflow
+      // Original: s = (v² - v₀²)/(2a)
+      
+      // First calculate each squared term separately
+      long maxSpeedSquared = maxSpeed * maxSpeed;
+      long minSpeedSquared = minSpeed * minSpeed;
+      
+      // Then divide by 2a before subtracting to keep numbers smaller
+      long stepsToAccelerate = (maxSpeedSquared/(2.0 * acceleration)) - (minSpeedSquared/(2.0 * acceleration));
+      
+      // Check for overflow before converting to long
+      if (stepsToAccelerate > LONG_MAX) {
+          Serial.println("Warning: Acceleration distance overflow!");
+          return LONG_MAX;
+      }
+      /*Serial.print(" --- Calc Accel Steps for ");
+      Serial.println(motorLabel);
+      Serial.println(stepsToAccelerate);*/
+      return long(stepsToAccelerate);
+    }
+
     void moveTo(long dest) { // dest = total steps to run
-      stepsToAccelerate = 0;
+      long prevTotalSteps = totalSteps;
       totalSteps = dest - currentPosition;
+      middleTotalSteps = int(dest - prevTotalSteps / 2);
       stepsSinceStart = 0;
       setDirection(totalSteps);
-      middleTotalSteps = int(totalSteps / 2);
       if (!isRunning) {
         isRunning = true;
         currentSpeed = minSpeed;
@@ -74,36 +104,48 @@ class QuickStepper {
       /*Serial.print("Called MoveTo On ");
       Serial.println(motorLabel);
       Serial.println(totalSteps);
-      Serial.println(dest);
-      Serial.println(currentPosition);*/
+      Serial.println(stepsToAccelerate);
+      Serial.println(currentPosition);
+      Serial.println(currentSpeed);
+      Serial.println(middleTotalSteps);*/
     }
 
-    void restartTime() {
+    void restart() {
       lastStepTime = micros();
+      stepsToAccelerate = calculateAccelerationSteps();
     }
 
     void stop() {
       isRunning = false;
+      brakeAcceleration = 0;
     }
 
     bool running() {
       return isRunning;
     }
 
-    void setAcceleration(float newAcceleration) { acceleration = newAcceleration; }
+    void setAcceleration(float newAcceleration) { 
+      acceleration = newAcceleration; 
+      stepsToAccelerate = calculateAccelerationSteps();
+    }
     void setMaxSpeed(float newMaxSpeed) { maxSpeed = newMaxSpeed; }
     void setMinSpeed(float newMinSpeed) { minSpeed = newMinSpeed; }
     void setPosition(float position) { currentPosition = position; }
+    void setKeepConstantSpeed(bool newKeepConstantSpeed) { keepConstantSpeed = newKeepConstantSpeed; }
+    bool getKeepConstantSpeed() { return keepConstantSpeed; }
     float getPercentageDone() {return static_cast<float>(stepsSinceStart) / static_cast<float>(totalSteps); }
     float getAcceleration() {return acceleration; }
     float getMaxSpeed() {return maxSpeed; }
     int getIsRunning() {return isRunning; }
     char getMotorLabel() {return motorLabel; }
+    float getCurrentSpeed() {return currentSpeed; }
+    
 
     MotorInfo getInfo() {
       MotorInfo info = {
         acceleration,
         maxSpeed,
+        minSpeed,
         currentPosition,
         isRunning,
         positiveDirection,
@@ -120,7 +162,7 @@ class QuickStepper {
   
   private:
 
-    void setDirection(unsigned int dest) {
+    void setDirection(long dest) {
       if (dest < 0) {
         positiveDirection = 0;
         digitalWrite(dirPin, LOW);
@@ -128,6 +170,12 @@ class QuickStepper {
         positiveDirection = 1;
         digitalWrite(dirPin, HIGH);
       }
+      if (prevPositiveDirection != positiveDirection) {
+        currentSpeed = -currentSpeed;
+        middleTotalSteps = 0;
+        //stepsSinceStart = 0;
+      }
+      prevPositiveDirection = positiveDirection;
     }
 
     void stepMotor() {
@@ -142,7 +190,7 @@ class QuickStepper {
 
       unsigned long currentMicros = micros();
 
-      if (stepsSinceStart >= totalSteps) {
+      if (stepsSinceStart >= abs(totalSteps)) {
         stop();
         /*Serial.print(motorLabel);
         Serial.println(positiveDirection);
@@ -152,41 +200,97 @@ class QuickStepper {
 
       if (currentMicros - lastStepTime >= stepDelay) {
         Serial.print(motorLabel);
-        Serial.println(positiveDirection);
+        if (currentSpeed < 0) {
+          if (positiveDirection == 1) {
+            Serial.println(0);
+          }
+          else {
+            Serial.println(1);
+          }
+        } else {
+          Serial.println(positiveDirection);
+        }
         Serial.println(currentMicros);
+        //Serial.println(currentSpeed);
         //Serial.println((totalSteps - stepsSinceStart));
         //Serial.println(stepsToAccelerate);
         // Serial.println(((totalSteps - stepsSinceStart) - stepsToAccelerate));
         stepMotor();
-        stepsSinceStart++;
-        if (positiveDirection == 1) {
+        if (currentSpeed > 0) {
           currentPosition++;
+          stepsSinceStart++;
         } else {
           currentPosition--;
+          stepsSinceStart--;
         }
         lastStepTime = currentMicros;
-        
-        // Update speed based on phase
-        if (currentSpeed < maxSpeed && !(stepsSinceStart > middleTotalSteps)) {
+
+        /*if (currentSpeed > -minSpeed && currentSpeed < minSpeed) {
+          currentSpeed = minSpeed;
+            = abs((totalSteps - stepsSinceStart) / 2);
+        }
+
+        else if (currentSpeed < maxSpeed 
+            && ((!(stepsSinceStart >= middleTotalSteps)) || middleTotalSteps == 0)
+            && ((totalSteps - stepsSinceStart) - stepsToAccelerate) < 0)
+        {
           currentSpeed += acceleration * (stepDelay / 1000000.0);
           if (currentSpeed >= maxSpeed) {
-            inConstantPhase = true;
-            stepsToAccelerate = stepsSinceStart * 0.95;
+            currentSpeed = maxSpeed;
           }
         }
         else if (
             currentSpeed > maxSpeed 
-            || (stepsSinceStart > middleTotalSteps && stepsToAccelerate == 0)
+            || (stepsSinceStart > middleTotalSteps)
             || ((totalSteps - stepsSinceStart) - stepsToAccelerate) < 0) 
         {
           currentSpeed -= acceleration * (stepDelay / 1000000.0);
           currentSpeed = max(currentSpeed, minSpeed);
         }
       
-        stepDelay = 1000000.0 / currentSpeed;
+        stepDelay = 1000000.0 / abs(currentSpeed);*/
+
+        // Calculate remaining distance
+        long remainingSteps = abs(totalSteps - stepsSinceStart);
+        
+        // Calculate stopping distance at current speed
+        float stoppingDistance = (currentSpeed * currentSpeed) / (2.0 * acceleration);
+
+        if (keepConstantSpeed) {
+          return true;
+        }
+
+        else if (currentSpeed > -minSpeed && currentSpeed < minSpeed) {
+            currentSpeed = minSpeed;
+            middleTotalSteps = abs((totalSteps - stepsSinceStart) / 2);
+        }
+        // If we're decelerating, don't allow acceleration changes
+        else if (remainingSteps <= stoppingDistance) {
+          if (brakeAcceleration == 0) {brakeAcceleration = acceleration; };
+            // We need to decelerate
+            currentSpeed -= brakeAcceleration * (stepDelay / 1000000.0);
+            currentSpeed = max(currentSpeed, minSpeed);
+        }
+        // Normal acceleration phase
+        else if (currentSpeed < maxSpeed 
+        && ((!(stepsSinceStart >= middleTotalSteps)) || middleTotalSteps == 0) 
+        && remainingSteps > stoppingDistance) 
+        {
+            currentSpeed += acceleration * (stepDelay / 1000000.0);
+            currentSpeed = min(currentSpeed, maxSpeed);
+        }
+        else {
+          /*Serial.print("NOTHING HAPPENED FOR ");
+          Serial.println(motorLabel);
+          Serial.println(remainingSteps > stoppingDistance);
+          Serial.println(stepsSinceStart);
+          Serial.println(middleTotalSteps);*/
+        }
+
+        stepDelay = 1000000.0 / abs(currentSpeed);
       }
       return true;
-    };
+    }
 };
 
 class MultiStepper {
@@ -203,6 +307,7 @@ class MultiStepper {
     long* futurePositions[MAX_CHAINS][COORDINATE_DIMENSIONS];
     int futurePositionsIndex = 0;
     bool isRunning = false;
+    bool allowFastRecovery = true;
 
     // Chaining
     float cornering = 0.2;
@@ -353,7 +458,7 @@ class MultiStepper {
         } else {
           steps[i] = 0;
         }*/
-        int stepsLeft = motors[i]->getInfo().totalSteps;// - motors[i]->getInfo().stepsSinceStart;
+        int stepsLeft = motors[i]->getInfo().totalSteps - motors[i]->getInfo().stepsSinceStart;
         motors[i]->moveTo(positions[i]);
         steps[i] = motors[i]->getInfo().totalSteps - stepsLeft;
       }
@@ -368,6 +473,9 @@ class MultiStepper {
         if (steps[i] != 0) {
           motors[i]->setMaxSpeed(params[i].maxSpeed);
           motors[i]->setAcceleration(params[i].acceleration);
+          if (motors[i]->getCurrentSpeed() != motors[i]->getInfo().minSpeed) {
+            motors[i]->setKeepConstantSpeed(true);
+          }
         }
       }
 
@@ -381,17 +489,31 @@ class MultiStepper {
     bool run() {
       if (!isRunning) {
         for (int i = 0; i < motorCount; i++) {
-          motors[i]->restartTime();
+          motors[i]->restart();
         }
         isRunning = true;
       }
       bool anyRunning = false;
       bool anyBelowThreshold = false;
+      float lowestSpeed = LONG_MAX;
+      for (int i = 0; i < motorCount; i++) {
+        if (motors[i]->running()) {
+          float currentSpeed = abs(motors[i]->getCurrentSpeed());
+          if (currentSpeed < lowestSpeed) {
+            lowestSpeed = currentSpeed;
+          }
+        }
+      }
       for (int i = 0; i < motorCount; i++) {
         if (motors[i]->run()) {
           anyRunning = true;
           if (motors[i]->getPercentageDone() <= percentageBeforeTurning) {
             anyBelowThreshold = true;  // One motor is below threshold
+          }
+        }
+        if (motors[i]->getKeepConstantSpeed()) {
+          if (abs(motors[i]->getCurrentSpeed()) <= lowestSpeed) {
+            motors[i]->setKeepConstantSpeed(false);
           }
         }
       }
@@ -422,10 +544,17 @@ class MultiStepper {
       }
     }
 
-    void setMinSpeed(float newMinSpeed) { 
+    void setMinSpeed(float newMinSpeed) { // Should be 1/10 of maxSpeed
       for (int i = 0; i < motorCount; i++) {
         motors[i]->setMinSpeed(newMinSpeed);
       }
+    }
+
+    void setAllowFastRecovery(bool newAllowFastRecovery) {
+      // When motor has to change direction, we up the acceleration drastically
+      // Only allow if your motors can handle it
+      // If False this could mean that your motors could overshoot ~20%
+      allowFastRecovery = newAllowFastRecovery;
     }
 };
 
@@ -437,16 +566,17 @@ MultiStepper steppers;
 
 void setup() {
   //const float STEPS_PER_CM = 110.65;
-  const float STEPS_PER_CM = 20;
+  const float STEPS_PER_CM = 30;
   Serial.begin(9600);
   // put your setup code here, to run once:
   steppers.addMotor(&stepperX);
   steppers.addMotor(&stepperY);
   steppers.addMotor(&stepperZ);
-  steppers.setMaxSpeed(2 * STEPS_PER_CM); // 20
-  steppers.setAcceleration(2); // 100
-  steppers.setMinSpeed(2); // 100
-  steppers.setCornering(0.25);
+  steppers.setMaxSpeed(30); // 20
+  steppers.setAcceleration(10); // 100
+  steppers.setMinSpeed(3); // 100
+  steppers.setCornering(0.40);
+  steppers.setAllowFastRecovery(true);
 
   stepperX.setLabel('X');
   stepperY.setLabel('Y');
