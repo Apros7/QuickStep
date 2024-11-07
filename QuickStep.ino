@@ -1,3 +1,5 @@
+#include <assert.h>
+
 #define LONG_MAX 2147483647L
 #define LONG_MIN -2147483648L
 
@@ -52,6 +54,8 @@ class QuickStepper {
     bool allowFastRecovery = true;
     float allowFastRecoveryFactor = 2.5;
     bool catchingUpMode = false;
+    long stepDelayBuffer = 0;
+    int hasSkippedIndex = 0;
 
     // Delete
     char motorLabel = '-';
@@ -121,6 +125,7 @@ class QuickStepper {
     void stop() {
       isRunning = false;
       brakeAcceleration = 0;
+      stepDelayBuffer = 0;
     }
 
     bool running() {
@@ -192,13 +197,19 @@ class QuickStepper {
     }
   
   long calculateStepsDifference(float v1, float v0, float a1) {
-    float velocity_diff = v1 - v0;
-    return long((velocity_diff * velocity_diff) / (2 * a1));
+    const int MAX_ITERATIONS = 1000;
+    for (int i = 0; i < MAX_ITERATIONS; i++) {
+      if (v1 <= v0) return i;
+      long tempStepDelay = 1000000.0 / abs(v1);
+      v1 -= a1 * (tempStepDelay / 1000000.0);
+    }
+    return MAX_ITERATIONS;
   }
   
   public:
     bool run(long stepsBehind) {
       if (!isRunning) return;
+      assert(hasSkippedIndex < 5);
       if (stepsBehind > 2) { // buffer to make sure it is enough to accelerate for
         catchingUpMode = true;
         //Serial.print("CATCHING UP MODE ACTIVATE FOR ");
@@ -215,7 +226,9 @@ class QuickStepper {
         return false;
       }
 
-      if (currentMicros - lastStepTime >= stepDelay) {
+      if (currentMicros - lastStepTime + stepDelayBuffer >= stepDelay) {
+        hasSkippedIndex += 1;
+        stepDelayBuffer += currentMicros - lastStepTime - stepDelay;
         Serial.print(motorLabel);
         if (currentSpeed < 0) {
           if (positiveDirection == 1) {
@@ -273,8 +286,14 @@ class QuickStepper {
         // Calculate stopping distance at current speed
         float stoppingDistance = (currentSpeed * currentSpeed) / (2.0 * acceleration);
 
-        if (catchingUpMode) {
-          long stepsRequiredToDecellerate = calculateStepsDifference(currentSpeed, maxSpeed, acceleration);
+        //if (catchingUpMode) {
+        if (false) {
+          float stepsRequiredToDecellerate = calculateStepsDifference(currentSpeed, maxSpeed, acceleration);
+          Serial.print("CATCHING UP MODE ACTIVE FOR ");
+          Serial.println(motorLabel);
+          Serial.println(currentSpeed);
+          Serial.println(stepsRequiredToDecellerate);
+          Serial.println(stepsBehind);
           if (stepsBehind > stepsRequiredToDecellerate) {
             currentSpeed += acceleration * (stepDelay / 1000000.0);
             currentSpeed = min(currentSpeed, maxSpeed * 1.5);
@@ -282,13 +301,14 @@ class QuickStepper {
             currentSpeed -= brakeAcceleration * (stepDelay / 1000000.0);
             currentSpeed = max(currentSpeed, minSpeed);
           } else {
+            //Serial.print("DISABLING CATCHING UP MODE");
             currentSpeed = maxSpeed;
             catchingUpMode = false;
             //Serial.print("CATCHING UP MODE DEACTIVATE FOR ");
             //Serial.println(motorLabel);
           }
         }
-        else if (keepConstantSpeed) {
+        if (keepConstantSpeed) {
           //Serial.println("keep");
           return true;
         }
@@ -331,6 +351,9 @@ class QuickStepper {
           brakeAcceleration = 0;
         }
         stepDelay = 1000000.0 / abs(currentSpeed);
+
+      } else {
+        hasSkippedIndex = 0;
       }
       return true;
     }
@@ -517,8 +540,11 @@ class MultiStepper {
         int stepsLeft = motors[i]->getInfo().totalSteps - motors[i]->getInfo().stepsSinceStart;
         motors[i]->moveTo(positions[i]);
         //motors[i]->setOffsetFromPreviousRoute(stepsLeft);
-        steps[i] = motors[i]->getInfo().totalSteps - abs(stepsLeft);
+        steps[i] = motors[i]->getInfo().totalSteps;// - abs(stepsLeft);
         stepsBehind[i] = stepsLeft;
+        if (stepsLeft == 0) {
+          leadMotor = i;
+        }
       }
       bool anyOtherMotorsPositiveSteps[MAX_MOTORS];
       for (int i = 0; i < motorCount; i++) {
@@ -531,8 +557,6 @@ class MultiStepper {
           }
         }
         if (!anyOtherMotorsPositiveSteps[i]) {
-          Serial.print("--------------- SETTING THIS MOTOR TO LEADMOTOR: ");
-          Serial.print(motors[i]->getMotorLabel());
           leadMotor = i;
         }
       }
@@ -543,12 +567,13 @@ class MultiStepper {
         if (steps[i] != 0) {
           motors[i]->setMaxSpeed(params[i].maxSpeed);
           motors[i]->setAcceleration(params[i].acceleration);
-          if (
+          /*if (
             motors[i]->getCurrentSpeed() != motors[i]->getInfo().minSpeed
             && anyOtherMotorsPositiveSteps[i]
           ) {
-            motors[i]->setKeepConstantSpeed(true);
-          }
+
+            //motors[i]->setKeepConstantSpeed(true);
+          }*/
         }
       }
 
@@ -581,7 +606,7 @@ class MultiStepper {
         long differenceToLeadMotor = max(
           motors[leadMotor]->getInfo().stepsSinceStart + stepsBehind[i] - motors[i]->getInfo().stepsSinceStart
         , 0);
-        Serial.print("DIFFERENCE TO LEAD MOTOR FOR ");
+        /*Serial.print("DIFFERENCE TO LEAD MOTOR FOR ");
         Serial.print(motors[i]->getMotorLabel());
         Serial.print(" IS ");
         Serial.println(differenceToLeadMotor);
@@ -589,7 +614,7 @@ class MultiStepper {
         Serial.println(i);
         Serial.println(motors[leadMotor]->getInfo().stepsSinceStart);
         Serial.println(motors[i]->getInfo().stepsSinceStart);
-        Serial.println(*stepsBehind[i]);
+        Serial.println(*stepsBehind[i]);*/
 
         if (motors[i]->run(differenceToLeadMotor)) {
           anyRunning = true;
@@ -662,18 +687,18 @@ QuickStepper stepperZ(4, 5);
 MultiStepper steppers;
 
 void setup() {
-  const float STEPS_PER_CM = 110.65;
-  //const float STEPS_PER_CM = 30;
+  //const float STEPS_PER_CM = 110.65;
+  const float STEPS_PER_CM = 50;
   Serial.begin(9600);
   // put your setup code here, to run once:
   steppers.addMotor(&stepperX);
   steppers.addMotor(&stepperY);
   steppers.addMotor(&stepperZ);
-  steppers.setMaxSpeed(30); // 20
-  steppers.setAcceleration(10); // 100
+  steppers.setMaxSpeed(15); // 20
+  steppers.setAcceleration(5); // 100 // no less than 1/3 of maxSpeed
   steppers.setMinSpeed(3); // 100 // should be above 5 no matter what. 
   // If not you risk getting caught waiting too long for a step to take place
-  steppers.setStepsLeftWhenCornering(40); // make it about 40 % of smallest axis
+  steppers.setStepsLeftWhenCornering(10); // make it about 40 % of smallest axis
   steppers.setAllowFastRecovery(true);
   steppers.setAllowFastRecoveryFactor(3.0);
 
