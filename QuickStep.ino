@@ -48,6 +48,8 @@ class QuickStepper {
     long stepsToAccelerate;
     float middleTotalSteps;
     long currentPosition;
+    long upperLimit = LONG_MAX;
+    long lowerLimit = -LONG_MAX;
     int positiveDirection = 1;
     int prevPositiveDirection = 1;
     bool keepConstantSpeed = false;
@@ -136,6 +138,12 @@ class QuickStepper {
       acceleration = newAcceleration; 
       stepsToAccelerate = calculateAccelerationSteps();
     }
+
+    void setLimits(long newLowerLimit, long newUpperLimit) {
+      lowerLimit = newLowerLimit;
+      upperLimit = newUpperLimit;
+    }
+
     void setMaxSpeed(float newMaxSpeed) { maxSpeed = newMaxSpeed; }
     void setMinSpeed(float newMinSpeed) { minSpeed = newMinSpeed; }
     void setPosition(float position) { currentPosition = position; }
@@ -249,9 +257,11 @@ class QuickStepper {
         if (currentSpeed > 0) {
           currentPosition++;
           stepsSinceStart++;
+          assert(currentPosition < upperLimit);
         } else {
           currentPosition--;
           stepsSinceStart--;
+          assert(currentPosition > lowerLimit);
         }
         lastStepTime = currentMicros;
 
@@ -698,7 +708,8 @@ void setup() {
   steppers.setAcceleration(5); // 100 // no less than 1/3 of maxSpeed
   steppers.setMinSpeed(3); // 100 // should be above 5 no matter what. 
   // If not you risk getting caught waiting too long for a step to take place
-  steppers.setStepsLeftWhenCornering(10); // make it about 40 % of smallest axis
+  steppers.setStepsLeftWhenCornering(10); // make it about 20% of smallest axis
+  // by testing, this seems to give the best results.
   steppers.setAllowFastRecovery(true);
   steppers.setAllowFastRecoveryFactor(3.0);
 
