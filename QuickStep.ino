@@ -717,15 +717,24 @@ void setup() {
   stepperY.setLabel('Y');
   stepperZ.setLabel('Z');
 
+  // CHAIN 1
   long positions[] = {0, 0, 1 * STEPS_PER_CM};
+  long positions2[] = {4 * STEPS_PER_CM, 6 * STEPS_PER_CM, 5 * STEPS_PER_CM};
+  long positions3[] = {4 * STEPS_PER_CM, 6 * STEPS_PER_CM, 4 * STEPS_PER_CM};
+  long speeds3[] = {8, 8, 8}; // but z has to go this speed and go down like what the fuck
+  steppers.moveTo(positions);
+  steppers.chainTo(positions2);
+  steppers.chainTo(positions3, speeds3);
+
+  /*long positions[] = {0, 0, 1 * STEPS_PER_CM};
   long positions2[] = {2 * STEPS_PER_CM, 2 * STEPS_PER_CM, 3 * STEPS_PER_CM};
   long speeds[] = {20, 20, 0};
   long positions3[] = {2 * STEPS_PER_CM, 2 * STEPS_PER_CM, 2 * STEPS_PER_CM};
   steppers.moveTo(positions);
   steppers.chainTo(positions2, speeds);
-  steppers.chainTo(positions3);
+  steppers.chainTo(positions3);*/
 
-  Serial.println("X");
+  /*Serial.println("X");
   Serial.println(stepperX.getInfo().totalSteps);
   Serial.println(stepperX.getAcceleration());
   Serial.println(stepperX.getMaxSpeed());
@@ -737,9 +746,32 @@ void setup() {
   Serial.println(stepperZ.getInfo().totalSteps);
   Serial.println(stepperZ.getAcceleration());
   Serial.println(stepperZ.getMaxSpeed());
-  Serial.println("-----------");
+  Serial.println("-----------");*/
 
-  while(steppers.run()) {}
+  while(steppers.run()) {
+    if (
+      steppers.chain() == 2
+      && stepperX.inConstantSpeed() 
+      && limitSwitchIsOn(stepperZ.currentPosition)
+    ) {
+      stepperZ.stop();
+      startSucking();
+      delay(1000);
+      stepperX.proceed();
+      stepperY.proceed();
+      stepperZ.proceed();
+      break;
+    }
+  }
+  long curX = stepperX.currentPosition
+  long curY = stepperY.currentPosition
+
+  long positions4[] = {curX, curY, curX + 1};
+  long positions5[] = {10 * STEPS_PER_CM, 1 * STEPS_PER_CM, 9.5 * STEPS_PER_CM};
+  long positions6[] = {0 * STEPS_PER_CM, 0 * STEPS_PER_CM, 1 * STEPS_PER_CM};
+  steppers.moveTo(positions4);
+  steppers.chainTo(positions5);
+  steppers.chainTo(positions6);
 
   Serial.println("Positions reached after:");
   Serial.println(millis() / 1000);
