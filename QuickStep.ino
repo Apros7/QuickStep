@@ -802,6 +802,9 @@ QuickStepper stepperZ(4, 5);
 MultiStepper steppers;
 
 void setup() {
+
+  // Maybe test with much easier path to begin with?
+
   //const float STEPS_PER_CM = 110.65;
   const float STEPS_PER_CM = 50;
   // const int LIMIT_SWITCH_PIN = 0; // maybe as define instead
@@ -885,8 +888,8 @@ void setup() {
       break;
     }
   }
-  long curX = stepperX.currentPosition
-  long curY = stepperY.currentPosition
+  long curX = stepperX.currentPosition;
+  long curY = stepperY.currentPosition;
 
   long positions4[] = {curX, curY, curX + 1};
   long positions5[] = {10 * STEPS_PER_CM, 1 * STEPS_PER_CM, 9.5 * STEPS_PER_CM};
