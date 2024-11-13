@@ -454,7 +454,7 @@ class MultiStepper {
     float maxAcceleration = 1; // steps/s^2
     float maxSpeed = 1;
     long* currentPositions[COORDINATE_DIMENSIONS];
-    PositionData* futurePositions[MAX_CHAINS][COORDINATE_DIMENSIONS];
+    MotorData* futurePositions[MAX_CHAINS][COORDINATE_DIMENSIONS];
     int futurePositionsIndex = 0;
     bool isRunning = false;
     bool allowFastRecovery = true;
@@ -532,12 +532,12 @@ class MultiStepper {
       return true;
     }
     
-    void moveTo(long positions[3]) {
+    void moveTo(MotorData positions[3]) {
 
       long steps[motorCount];
-      for (int i = 0; i < COORDINATE_DIMENSIONS; i++) {
-        currentPositions[i] = &positions[i];
-      }
+      // for (int i = 0; i < COORDINATE_DIMENSIONS; i++) {
+      //   currentPositions[i] = &positions[i];
+      // }
       for (int i = 0; i < motorCount; i++) {
         motors[i]->moveTo(positions[i]);
         steps[i] = motors[i]->getInfo().totalSteps;
@@ -559,13 +559,15 @@ class MultiStepper {
 
     void chainTo(long* positions, MotorInitParams* initParams = nullptr) {
       // Will always overwrite positions if MotorInitParams is given;
-      futurePositions[i][j] = new PositionData();
-      else if (positions == nullptr) {
-          futurePositions[i][j]->type = PositionData::LONG;
+      for (int i = 0; i < COORDINATE_DIMENSIONS; i++) {
+        futurePositions[futurePositionsIndex][i] = new MotorData();
+        if (positions == nullptr) {
+          futurePositions[i][j]->type = MotorData::LONG;
           futurePositions[i][j]->data.initParams = initParams;
-      } else {
-          futurePositions[i][j]->type = PositionData::MOTOR_PARAMS;
+        } else {
+          futurePositions[i][j]->type = MotorData::MOTOR_PARAMS;
           futurePositions[i][j]->data.position = positions;
+        }
       }
       futurePositionsIndex++;
     }
