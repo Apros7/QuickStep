@@ -2,6 +2,11 @@
 
 #define LONG_MAX 2147483647L
 #define LONG_MIN -2147483648L
+#define PUMP_PIN 6
+
+// Global variables
+
+bool isSucking = false;
 
 struct MotorInfo {
   float acceleration;
@@ -19,11 +24,20 @@ struct MotorParams {
   float maxSpeed;
 };
 
-/* struct RunID {
-  bool inConstantPhase = false;
-  bool deceleration = false;
-  long destination;
-} */
+struct MotorInitParams {
+  // This is used for more complex starting of motors, especially useful when cornering
+  long desiredSpeed; // steps/second
+  bool fitToSpeedStart; // accel or brake to go to desiredSpeed when this run begins
+  bool fitToSpeedEnd; // accel or brake to go to desiredSpeed when this run ends
+};
+
+struct MotorData {
+  enum Type { LONG, MOTOR_PARAMS} type;
+  union {
+    long position;
+    MotorInitParams initParams;
+  } data;
+};
 
 class QuickStepper {
   private:
@@ -40,8 +54,6 @@ class QuickStepper {
     unsigned long lastStepTime = 0;
     unsigned long constantPhaseStart = 0;
     long totalSteps = 0;
-    bool inConstantPhase = false;
-    bool deceleration = false;
     unsigned long constantDuration = 0;
     bool isRunning = false;
     long stepsSinceStart;
@@ -58,6 +70,8 @@ class QuickStepper {
     bool catchingUpMode = false;
     long stepDelayBuffer = 0;
     int hasSkippedIndex = 0;
+    bool inComplexInitPhase = false;
+    MotorData complexInitParams = nullptr;
 
     // Delete
     char motorLabel = '-';
@@ -96,7 +110,18 @@ class QuickStepper {
       return long(stepsToAccelerate);
     }
 
-    void moveTo(long dest) { // dest = total steps to run
+    void proceed() {
+      setInComplexInitPhase(false);
+    }
+
+    void moveToComplex(MotorData dest) {
+      setInComplexInitPhase(true);
+      complexInitParams = dest;
+    }
+
+    void moveTo(MotorData dest) { // dest = total steps to run
+      if (dest.Type == MotorData::MOTOR_PARAMS) { moveToComplex(dest); return; }
+      if (inComplexInitPhase) {Serial.println("ERROR: In constant phase but moveTo is called with position"); while(1);}
       long prevTotalSteps = totalSteps;
       totalSteps = dest - currentPosition;
       middleTotalSteps = int(dest - prevTotalSteps / 2);
@@ -105,8 +130,6 @@ class QuickStepper {
       if (!isRunning) {
         isRunning = true;
         currentSpeed = minSpeed;
-        /*inConstantPhase = false;
-        deceleration = false;*/
         lastStepTime = micros();
         stepDelay = 1;
       }
@@ -150,7 +173,8 @@ class QuickStepper {
     void setKeepConstantSpeed(bool newKeepConstantSpeed) { keepConstantSpeed = newKeepConstantSpeed; }
     void setAllowFastRecovery(bool newAllowFastRecovery) { allowFastRecovery = newAllowFastRecovery; }
     void setAllowFastRecoveryFactor(float newAllowFastRecoveryFactor) { allowFastRecoveryFactor = newAllowFastRecoveryFactor; }
-    //void setOffsetFromPreviousRoute(long newOffsetFromPreviousRoute) {offsetFromPreviousRoute = newOffsetFromPreviousRoute; }
+    void setInComplexInitPhase(bool newInComplexInitPhase) { inComplexInitPhase = newInComplexInitPhase; complexInitParams = nullptr; }
+    bool getInComplexInitPhase() { return inComplexInitPhase; }
     bool getKeepConstantSpeed() { return keepConstantSpeed; }
     float getPercentageDone() {return static_cast<float>(stepsSinceStart) / static_cast<float>(totalSteps); }
     float getAcceleration() {return acceleration; }
@@ -158,6 +182,7 @@ class QuickStepper {
     int getIsRunning() {return isRunning; }
     char getMotorLabel() {return motorLabel; }
     float getCurrentSpeed() {return currentSpeed; }
+    
     
 
     MotorInfo getInfo() {
@@ -215,6 +240,50 @@ class QuickStepper {
   }
   
   public:
+    bool run_complex() {
+      // cannot deaccellerate, just have to wait until proceed is called and then will corner to the right place.
+      unsigned long currentMicros = micros();
+      if (currentMicros - lastStepTime + stepDelayBuffer >= stepDelay) {
+        stepDelayBuffer += currentMicros - lastStepTime - stepDelay;
+        Serial.print(motorLabel);
+        if (currentSpeed < 0) {
+          if (positiveDirection == 1) {
+            Serial.print(0);
+          }
+          else {
+            Serial.print(1);
+          }
+        } else {
+          Serial.print(positiveDirection);
+        }
+        if (isSucking) {
+          Serial.println(1);
+        } else {
+          Serial.println(0);
+        }
+        Serial.println(currentMicros);
+        Serial.println(currentSpeed);
+        stepMotor();
+        if (currentSpeed > 0) {
+          currentPosition++;
+          assert(currentPosition < upperLimit);
+        } else {
+          currentPosition--;
+          assert(currentPosition > lowerLimit);
+        }
+        lastStepTime = currentMicros;
+        if (currentSpeed > complexInitParams.desiredSpeed) {
+          currentSpeed -= acceleration * (stepDelay / 1000000.0);
+          currentSpeed = max(currentSpeed, complexInitParams.desiredSpeed);
+        }
+        else if (currentSpeed < complexInitParams.desiredSpeed) {
+          currentSpeed += acceleration * (stepDelay / 1000000.0);
+          currentSpeed = min(currentSpeed, complexInitParams.desiredSpeed);
+        }
+      }
+      return true;
+    };
+
     bool run(long stepsBehind) {
       if (!isRunning) return;
       assert(hasSkippedIndex < 5);
@@ -240,13 +309,18 @@ class QuickStepper {
         Serial.print(motorLabel);
         if (currentSpeed < 0) {
           if (positiveDirection == 1) {
-            Serial.println(0);
+            Serial.print(0);
           }
           else {
-            Serial.println(1);
+            Serial.print(1);
           }
         } else {
-          Serial.println(positiveDirection);
+          Serial.print(positiveDirection);
+        }
+        if (isSucking) {
+          Serial.println(1);
+        } else {
+          Serial.println(0);
         }
         Serial.println(currentMicros);
         Serial.println(currentSpeed);
@@ -299,11 +373,11 @@ class QuickStepper {
         //if (catchingUpMode) {
         if (false) {
           float stepsRequiredToDecellerate = calculateStepsDifference(currentSpeed, maxSpeed, acceleration);
-          Serial.print("CATCHING UP MODE ACTIVE FOR ");
+          /*Serial.print("CATCHING UP MODE ACTIVE FOR ");
           Serial.println(motorLabel);
           Serial.println(currentSpeed);
           Serial.println(stepsRequiredToDecellerate);
-          Serial.println(stepsBehind);
+          Serial.println(stepsBehind);*/
           if (stepsBehind > stepsRequiredToDecellerate) {
             currentSpeed += acceleration * (stepDelay / 1000000.0);
             currentSpeed = min(currentSpeed, maxSpeed * 1.5);
@@ -380,12 +454,13 @@ class MultiStepper {
     float maxAcceleration = 1; // steps/s^2
     float maxSpeed = 1;
     long* currentPositions[COORDINATE_DIMENSIONS];
-    long* futurePositions[MAX_CHAINS][COORDINATE_DIMENSIONS];
+    PositionData* futurePositions[MAX_CHAINS][COORDINATE_DIMENSIONS];
     int futurePositionsIndex = 0;
     bool isRunning = false;
     bool allowFastRecovery = true;
     int leadMotor = -1; // Motor that has the lead on steps for current running chain
     long* stepsBehind[COORDINATE_DIMENSIONS];
+    int chainIndex = 0;
 
     // Chaining
     int stepsLeftWhenCornering = 10;
@@ -441,6 +516,10 @@ class MultiStepper {
       setAcceleration(maxAcceleration);
     }
 
+    int getChainIndex() {
+      return chainIndex;
+    }
+
     void setStepsLeftWhenCornering(float newStepsLeftWhenCornering) {
       stepsLeftWhenCornering = newStepsLeftWhenCornering;
     }
@@ -478,30 +557,32 @@ class MultiStepper {
 
     }
 
-    void chainTo(long* positions, long* speeds = nullptr) {
-      if (speeds == nullptr) {
-        long* speeds[MAX_MOTORS];
-        for (int i = 0; i < MAX_MOTORS; i++) {
-          speeds[i] = 0;
-        }
-      }
-      // Store the actual values, not pointers
-      for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
-          // Allocate new memory for each position
-          futurePositions[futurePositionsIndex][j] = new long(positions[j]);
+    void chainTo(long* positions, MotorInitParams* initParams = nullptr) {
+      // Will always overwrite positions if MotorInitParams is given;
+      futurePositions[i][j] = new PositionData();
+      else if (positions == nullptr) {
+          futurePositions[i][j]->type = PositionData::LONG;
+          futurePositions[i][j]->data.initParams = initParams;
+      } else {
+          futurePositions[i][j]->type = PositionData::MOTOR_PARAMS;
+          futurePositions[i][j]->data.position = positions;
       }
       futurePositionsIndex++;
     }
 
-    void stop() {
+    void reset() {
       for (int i = 0; i < MAX_CHAINS; i++) {
         for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
-          futurePositions[i][j] = 0; // Set each element to 0
+          if (futurePositions[i][j] != nullptr) {
+              delete futurePositions[i][j];  // Free the allocated memory
+              futurePositions[i][j] = nullptr;  // Set pointer to null
+          }
         }
       }
       futurePositionsIndex = 0;
       isRunning = false;
       leadMotor == -1;
+      chainIndex = 0;
       for (int i = 0; i < COORDINATE_DIMENSIONS; i++) {
         stepsBehind[i] = 0;
       }
@@ -524,9 +605,10 @@ class MultiStepper {
 
     void startCornering() {
       if (futurePositionsIndex < 1) {return; }
+      chainIndex++;
       
       // Create local array to store the values
-      long positions[COORDINATE_DIMENSIONS];
+      MotorData positions[COORDINATE_DIMENSIONS];
       for (int j = 0; j < COORDINATE_DIMENSIONS; j++) {
           positions[j] = *futurePositions[0][j];  // Dereference to get value
           delete futurePositions[0][j];  // Free the memory
@@ -601,8 +683,8 @@ class MultiStepper {
         }
         isRunning = true;
       }
+      bool anyInComplexPhase = false;
       bool anyRunning = false;
-      bool anyBelowThreshold = false;
       float lowestSpeed = LONG_MAX;
       for (int i = 0; i < motorCount; i++) {
         if (motors[i]->running()) {
@@ -612,6 +694,8 @@ class MultiStepper {
           }
         }
       }
+
+      bool anyBelowThreshold = false;
       for (int i = 0; i < motorCount; i++) {
         long differenceToLeadMotor = max(
           motors[leadMotor]->getInfo().stepsSinceStart + stepsBehind[i] - motors[i]->getInfo().stepsSinceStart
@@ -626,7 +710,12 @@ class MultiStepper {
         Serial.println(motors[i]->getInfo().stepsSinceStart);
         Serial.println(*stepsBehind[i]);*/
 
-        if (motors[i]->run(differenceToLeadMotor)) {
+        if (motors[i]->getInComplexInitPhase()) {
+          anyInComplexPhase = true;
+          motors[i]->run_complex();
+        }
+
+        else if (motors[i]->run(differenceToLeadMotor)) {
           anyRunning = true;
           if (abs(motors[i]->getInfo().totalSteps - motors[i]->getInfo().stepsSinceStart) > stepsLeftWhenCornering ) {
             anyBelowThreshold = true;  // One motor is below threshold
@@ -638,10 +727,10 @@ class MultiStepper {
           }
         }
       }
-      if (!anyBelowThreshold && anyRunning) { 
+      if (!anyBelowThreshold && anyRunning && !anyInComplexPhase) { 
         startCornering(); 
       }
-      if (!anyRunning) { stop(); }
+      if (!anyRunning) { reset(); }
       return anyRunning;
     }
     
@@ -690,6 +779,22 @@ class MultiStepper {
     }
 };
 
+// Bonus functions for extra capabality (should not be a part of QuickStepper)
+
+bool limitSwitchIsOn(long z_pos, long z_lim) {
+  // refactor when in production
+  if (z_pos > z_lim) return true;
+  return false;
+}
+
+void startSucking() {
+  digitalWrite(PUMP_PIN, HIGH);
+}
+
+void stopSucking() {
+  digitalWrite(PUMP_PIN, LOW);
+}
+
 QuickStepper stepperX(0, 1);
 QuickStepper stepperY(2, 3);
 QuickStepper stepperZ(4, 5);
@@ -699,6 +804,10 @@ MultiStepper steppers;
 void setup() {
   //const float STEPS_PER_CM = 110.65;
   const float STEPS_PER_CM = 50;
+  // const int LIMIT_SWITCH_PIN = 0; // maybe as define instead
+  
+  pinMode(PUMP_PIN, OUTPUT);
+
   Serial.begin(9600);
   // put your setup code here, to run once:
   steppers.addMotor(&stepperX);
@@ -721,10 +830,19 @@ void setup() {
   long positions[] = {0, 0, 1 * STEPS_PER_CM};
   long positions2[] = {4 * STEPS_PER_CM, 6 * STEPS_PER_CM, 5 * STEPS_PER_CM};
   long positions3[] = {4 * STEPS_PER_CM, 6 * STEPS_PER_CM, 4 * STEPS_PER_CM};
-  long speeds3[] = {8, 8, 8}; // but z has to go this speed and go down like what the fuck
+  // long speeds3[] = {8, 8, 8}; // but z has to go this speed and go down like what the fuck
+  MotorInitParams motorSpeeds3[3] = { // x, y, z
+    {8.0, true, false},
+    {8.0, true, false},
+    {8.0, true, false}
+  };
+
   steppers.moveTo(positions);
   steppers.chainTo(positions2);
-  steppers.chainTo(positions3, speeds3);
+  steppers.chainTo(nullptr, motorSpeeds3);
+
+  // 0 is fully down. Testing required to fint the correct limits
+  long z_pickup_limit = STEPS_PER_CM * 1;
 
   /*long positions[] = {0, 0, 1 * STEPS_PER_CM};
   long positions2[] = {2 * STEPS_PER_CM, 2 * STEPS_PER_CM, 3 * STEPS_PER_CM};
@@ -748,15 +866,19 @@ void setup() {
   Serial.println(stepperZ.getMaxSpeed());
   Serial.println("-----------");*/
 
+  bool isSucking = false;
+
   while(steppers.run()) {
-    if (
-      steppers.chain() == 2
-      && stepperX.inConstantSpeed() 
-      && limitSwitchIsOn(stepperZ.currentPosition)
-    ) {
-      stepperZ.stop();
+    if (!isSucking && steppers.getChainIndex() == 2) {
       startSucking();
-      delay(1000);
+    }
+    if (
+      steppers.getChainIndex() == 2
+      && stepperX.getInConstantPhase() 
+      && limitSwitchIsOn(stepperX.getInfo().currentPosition - stepperZ.getInfo().currentPosition, z_pickup_limit)
+    ) {// This if is maybe too slow
+      stepperZ.stop();
+      // wait a bit here maybe to catch on to the item
       stepperX.proceed();
       stepperY.proceed();
       stepperZ.proceed();
@@ -772,6 +894,15 @@ void setup() {
   steppers.moveTo(positions4);
   steppers.chainTo(positions5);
   steppers.chainTo(positions6);
+
+  bool checkComplete = false;
+
+  while (steppers.run()) {
+    if (!checkComplete && steppers.getChainIndex() == 6) {
+      stopSucking();
+      checkComplete = true;
+    }
+  }
 
   Serial.println("Positions reached after:");
   Serial.println(millis() / 1000);
