@@ -15,11 +15,19 @@ The code is under the [MIT Licence](LICENSE), so feel free to use and modify to 
 ## How to use
 Download the .zip file and import it in the Arduino IDE. For instructions see [this arduino page](https://support.arduino.cc/hc/en-us/articles/5145457742236-Add-libraries-to-Arduino-IDE)
 
+## IMPORTANT:
+- If you choose to set the speeds for each motor manually in the chains, then there is no promise that the motors will stop at the same time. They will stop, when you call .procede() on all the motors, which had their speed specified.
+
 ## Todo:
 - [x] What if Accel is too slow then should deaccel
-- [ ] What if multiple motors
+- [x] What if multiple motors
 - [x] What if uneven steps
+- [ ] Be able to set limits and assert to not go over
+- [ ] Be able to go to speed and keep it, which would allow for more manual control (Multistepper should maybe just ignore then, narh but cant.)
 - What is motors can have different max speed and acceleration?
 - What if one motor has to have a permanent speed while others are moving
 - Z axis should change because it depends on x, and it should be able to handle this.
-- Second corner now is pretty bad
+
+
+Write alternative with Accelstepper:
+- [ ] If all the points can be calculated, then maybe this could work.
