@@ -78,6 +78,8 @@ def simulate_points(points: Points):
 # Create interactive 3D plot using plotly
 
     # print(*points.vz.items(), sep="\n")
+    # print(points.vz)
+
     points.vx = {k / 1000: v * CM_PER_STEPS for k, v in points.vx.items()}
     points.vy = {k / 1000: v * CM_PER_STEPS for k, v in points.vy.items()}
     points.vz = {k / 1000: v * CM_PER_STEPS for k, v in points.vz.items()}
@@ -117,10 +119,11 @@ def simulate_points(points: Points):
     fig_3d.show()
 
     # Create speed plots
-    plt.figure(figsize=(15, 5))
+    plt.figure(figsize=(15, 8))
 
-    plt.subplot(131)
-    plt.plot(points.vx.keys(), points.vx.values(), 'r--', label='X Speed 2')
+    # Velocity plots
+    plt.subplot(231)
+    plt.plot(points.vx.keys(), points.vx.values(), 'r--', label='X Speed')
     plt.axhline(y=3/110.65, color='k', linestyle='-', alpha=0.5)
     plt.axhline(y=-3/110.65, color='k', linestyle='-', alpha=0.5)
     plt.xlabel('Time (s)')
@@ -130,8 +133,8 @@ def simulate_points(points: Points):
     plt.xlim(-0.2, X_HIGH)
     plt.grid(True)
 
-    plt.subplot(132)
-    plt.plot(points.vy.keys(), points.vy.values(), 'g--', label='Y Speed 2')
+    plt.subplot(232)
+    plt.plot(points.vy.keys(), points.vy.values(), 'g--', label='Y Speed')
     plt.axhline(y=3/110.65, color='k', linestyle='-', alpha=0.5)
     plt.axhline(y=-3/110.65, color='k', linestyle='-', alpha=0.5)
     plt.xlabel('Time (s)')
@@ -141,14 +144,39 @@ def simulate_points(points: Points):
     plt.xlim(-0.2, X_HIGH)
     plt.grid(True)
 
-    plt.subplot(133)
-    plt.plot(points.vz.keys(), points.vz.values(), 'b--', label='Z Speed 2')
+    plt.subplot(233)
+    plt.plot(points.vz.keys(), points.vz.values(), 'b--', label='Z Speed')
     plt.axhline(y=3/110.65, color='k', linestyle='-', alpha=0.5)
     plt.axhline(y=-3/110.65, color='k', linestyle='-', alpha=0.5)
     plt.xlabel('Time (s)')
     plt.ylabel('Speed (cm/s)')
     plt.title('Z Axis Speed')
     plt.ylim(Y_LOW, Y_HIGH)
+    plt.xlim(-0.2, X_HIGH)
+    plt.grid(True)
+
+    # Position plots
+    plt.subplot(234)
+    plt.plot(range(len(x_points)), x_points, 'r-', label='X Position')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Position (cm)')
+    plt.title('X Axis Position')
+    plt.xlim(-0.2, X_HIGH)
+    plt.grid(True)
+
+    plt.subplot(235)
+    plt.plot(range(len(y_points)), y_points, 'g-', label='Y Position')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Position (cm)')
+    plt.title('Y Axis Position')
+    plt.xlim(-0.2, X_HIGH)
+    plt.grid(True)
+
+    plt.subplot(236)
+    plt.plot(range(len(z_points)), z_points, 'b-', label='Z Position')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Position (cm)')
+    plt.title('Z Axis Position')
     plt.xlim(-0.2, X_HIGH)
     plt.grid(True)
 
