@@ -19,15 +19,16 @@ Download the .zip file and import it in the Arduino IDE. For instructions see [t
 - If you choose to set the speeds for each motor manually in the chains, then there is no promise that the motors will stop at the same time. They will stop, when you call .procede() on all the motors, which had their speed specified.
 
 ## Todo:
-- [x] What if Accel is too slow then should deaccel
-- [x] What if multiple motors
-- [x] What if uneven steps
-- [ ] Be able to set limits and assert to not go over
-- [ ] Be able to go to speed and keep it, which would allow for more manual control (Multistepper should maybe just ignore then, narh but cant.)
-- What is motors can have different max speed and acceleration?
-- What if one motor has to have a permanent speed while others are moving
-- Z axis should change because it depends on x, and it should be able to handle this.
-
-
-Write alternative with Accelstepper:
-- [ ] If all the points can be calculated, then maybe this could work.
+The corner step should be calculated by the max speed and acceleration, which should be enough I think. 
+- This would not be true if the motor is not going at full speed yet, then the calculation is off, and dynamic cornering should be used
+- [x] Cornering sort of
+- [x] Calculate cornering
+	- [ ] This overshoot, as the motors have to end at the same time (but they do not, so this overshoot should be fixed!) (diff is most likely wrong somehow?)
+- [ ] Cornering advanced (work with the full thing)
+- [ ] Hold speeds
+- [x] Work with changing dir !!
+- [ ] Speed goes to 0??
+	- Currently the length of the speeds input for the rollout is identical for with and without position3. The issue seems that somehow vol_idxs is accumilated faster, which is odd.
+    - This is because of bad cornering calculation, so deleted now, and should be fixed.
+- [ ] Speed plots not sure if they work with changing dir, should double check
+- [ ] Maybe make extensive test to what I want it to be able to do?
